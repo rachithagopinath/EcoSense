@@ -3,7 +3,10 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
 // https://vite.dev/config/
-export default defineConfig({
+// Production builds (and `vite preview`) are served from the GitHub Pages
+// project path /EcoSense/; the dev server keeps serving from /.
+export default defineConfig(({ mode }) => ({
+  base: mode === 'production' ? '/EcoSense/' : '/',
   plugins: [react(), tailwindcss()],
   server: { host: true, port: 5173 },
   build: {
@@ -19,4 +22,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))
