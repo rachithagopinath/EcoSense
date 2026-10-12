@@ -5,11 +5,12 @@ import { useTelemetry } from '../../context/telemetryContext'
 import { useNow } from '../../hooks/useNow'
 import { isActive } from '../../lib/alerts'
 import { cn } from '../../lib/cn'
-import { RULES, SENSOR_META, SENSOR_ORDER } from '../../lib/evaluate'
-import { formatReading, formatRelative, formatTime } from '../../lib/format'
+import { formatNumber, RULES, SENSOR_META, SENSOR_ORDER } from '../../lib/evaluate'
+import { formatRelative, formatTime } from '../../lib/format'
+import { LIVE_DEVICE, LIVE_RULE_TEXT } from '../../lib/live'
 import { SENSOR_ICON } from '../../lib/sensorIcons'
 import { ALERT_STYLE, LEVEL_STYLE } from '../../lib/status'
-import type { Alert, SensorId, TelemetrySnapshot } from '../../types/telemetry'
+import type { Alert, DataMode, SensorId, TelemetrySnapshot } from '../../types/telemetry'
 import { Logo } from '../layout/Logo'
 import { Sparkline } from '../ui/Sparkline'
 import { Surface } from '../ui/primitives'
@@ -41,6 +42,8 @@ const ACTION: Record<SensorId, { warning: string; critical: string; suggest: { w
 
 const SEVERITY_RANK = { critical: 0, warning: 1, resolved: 2 }
 
+const deviceName = (id: SensorId, mode: DataMode) => (mode === 'live' ? LIVE_DEVICE[id] : SENSOR_META[id].device)
+
 function age(ms: number): string {
   const s = Math.max(1, Math.round(ms / 1000))
   if (s < 60) return s === 1 ? '1 second' : `${s} seconds`
@@ -66,10 +69,21 @@ function FeaturedAlert({
   const Icon = SENSOR_ICON[alert.sensor]
   const status = snapshot.sensors[alert.sensor]
   const rule = RULES[alert.sensor]
+  const isLive = snapshot.mode === 'live'
+  const liveRule = LIVE_RULE_TEXT[alert.sensor]
+  const activeCount = snapshot.overall.activeHazards.length
   const steps = [
-    { label: 'Reading', value: `${formatReading(alert.sensor, snapshot.reading)} ${meta.unit}`, note: meta.device },
-    { label: 'Threshold', value: `≥ ${sev === 'critical' ? rule.critical : rule.warning} ${meta.unit}`, note: `${sev === 'critical' ? 'Critical' : 'Warning'} level` },
-    { label: 'Assessment', value: `Risk ${snapshot.overall.riskIndex}`, note: `${LEVEL_STYLE[snapshot.overall.level].band} overall` },
+    {
+      label: 'Reading',
+      value: status.available ? `${status.display} ${status.unit}`.trim() : status.label,
+      note: deviceName(alert.sensor, snapshot.mode),
+    },
+    isLive
+      ? { label: 'Threshold', value: (sev === 'critical' ? liveRule.critical : liveRule.warning) ?? liveRule.alert, note: `${sev === 'critical' ? 'Critical' : 'Warning'} level` }
+      : { label: 'Threshold', value: `≥ ${sev === 'critical' ? rule.critical : rule.warning} ${meta.unit}`, note: `${sev === 'critical' ? 'Critical' : 'Warning'} level` },
+    isLive
+      ? { label: 'Assessment', value: `${activeCount} active ${activeCount === 1 ? 'alert' : 'alerts'}`, note: snapshot.stale ? 'Last known state' : `${ALERT_STYLE[snapshot.overall.level === 'safe' ? 'resolved' : snapshot.overall.level].label} overall` }
+      : { label: 'Assessment', value: `Risk ${snapshot.overall.riskIndex}`, note: `${LEVEL_STYLE[snapshot.overall.level].band} overall` },
   ]
 
   return (
@@ -83,7 +97,7 @@ function FeaturedAlert({
     >
       <div className="flex items-center justify-between gap-3 text-[10px] tracking-[0.1em] text-ink-3 uppercase">
         <span>
-          Raised {formatTime(alert.timestamp)} · {alert.ref}
+          {isLive ? 'First detected' : 'Raised'} {formatTime(alert.timestamp)} · {alert.ref}
         </span>
         <span className="normal-case tracking-normal">{formatRelative(alert.timestamp, now)}</span>
       </div>
@@ -91,6 +105,9 @@ function FeaturedAlert({
         {ACTION[alert.sensor][sev]}
       </h3>
       <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink-2">{alert.message}</p>
+      {snapshot.stale && (
+        <p className="mt-1.5 text-[12px] text-warn">ESP32 disconnected. This is the last known state, not confirmation that it has cleared.</p>
+      )}
 
       <div className="mt-3.5 flex flex-wrap items-center gap-2 text-[12px]">
         <span className="inline-flex items-center gap-1.5 font-medium text-ink">
@@ -99,8 +116,8 @@ function FeaturedAlert({
         </span>
         <span className="rounded-full bg-night px-2 py-0.5 text-[10.5px] text-white">{ALERT_STYLE[sev].label}</span>
         <span className="inline-flex items-center gap-1.5 text-ink-2">
-          <span className={cn('size-1.5 rounded-full', LEVEL_STYLE[status.level].dot)} aria-hidden />
-          <span className="tnum font-medium text-ink">{status.score}</span> {status.label}
+          <span className={cn('size-1.5 rounded-full', status.available ? LEVEL_STYLE[status.level].dot : 'border border-dashed border-ink-3')} aria-hidden />
+          {status.score !== null && <span className="tnum font-medium text-ink">{status.score}</span>} {status.label}
         </span>
       </div>
 
@@ -146,7 +163,7 @@ function FeaturedAlert({
   )
 }
 
-function AlertRow({ alert, now, onOpen }: { alert: Alert; now: number; onOpen: () => void }) {
+function AlertRow({ alert, now, mode, onOpen }: { alert: Alert; now: number; mode: DataMode; onOpen: () => void }) {
   const Icon = SENSOR_ICON[alert.sensor]
   const s = ALERT_STYLE[alert.severity]
   return (
@@ -158,7 +175,7 @@ function AlertRow({ alert, now, onOpen }: { alert: Alert; now: number; onOpen: (
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[12.5px] font-medium text-ink">{alert.title}</span>
           <span className="block truncate text-[11px] text-ink-3">
-            {SENSOR_META[alert.sensor].device} · {alert.ref}
+            {deviceName(alert.sensor, mode)} · {alert.ref}
             {alert.acknowledged && alert.severity !== 'resolved' ? ' · acknowledged' : ''}
           </span>
         </span>
@@ -201,8 +218,12 @@ export function AttentionPanel({
   const alerting = new Set(active.map((a) => a.sensor))
   const watching = tab === 'active' ? SENSOR_ORDER.filter((id) => !alerting.has(id)) : []
 
+  const isLive = snapshot.mode === 'live'
   const oldest = active.length ? Math.min(...active.map((a) => a.timestamp)) : null
-  const peak = Math.max(...snapshot.history.map((p) => p.riskIndex))
+  const peak = Math.max(0, ...snapshot.history.map((p) => p.riskIndex ?? 0))
+  const temps = snapshot.history.map((p) => p.sensors.temperature.value).filter((v): v is number => v !== null)
+  const temp = snapshot.sensors.temperature
+  const humidity = snapshot.live?.humidity ?? null
   const raised = alerts.filter((a) => a.severity !== 'resolved')
   const crit = raised.filter((a) => a.severity === 'critical').length
 
@@ -216,7 +237,10 @@ export function AttentionPanel({
           <p className="mt-0.5 text-[12px] text-ink-3">
             {active.length
               ? `${active.length} active ${active.length === 1 ? 'hazard' : 'hazards'}. The oldest is ${age(snapshot.timestamp - oldest!)} old.`
-              : 'No active hazards right now.'}
+              : isLive && !snapshot.overall.known
+                ? 'Waiting for the first reading.'
+                : 'No active hazards right now.'}
+            {snapshot.stale && <span className="text-warn"> ESP32 disconnected, showing last known state.</span>}
           </p>
         </div>
         <div role="tablist" aria-label="Show alerts" className="flex shrink-0 rounded-full border border-line bg-mist p-0.5">
@@ -241,6 +265,8 @@ export function AttentionPanel({
         </div>
       </div>
 
+      {/* Featured card + list scroll together inside the panel, so this column never pushes the page taller. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="px-5">
         {featured ? (
             <FeaturedAlert
@@ -265,20 +291,25 @@ export function AttentionPanel({
               <div>
                 <p className="text-[15px] font-normal tracking-[-0.01em] text-ink">Nothing needs your attention</p>
                 <p className="mt-1 text-[12.5px] leading-relaxed text-ink-2">
-                  All four sensors are within safe limits. A card appears here as soon as a reading crosses its threshold. Try a demo scenario.
+                  {!isLive
+                    ? 'All four sensors are within safe limits. A card appears here as soon as a reading crosses its threshold. Try a demo scenario.'
+                    : !snapshot.overall.known
+                      ? 'Connected to the ESP32. Alerts appear here as soon as readings arrive and a sensor detects a hazard.'
+                      : `No live sensor is reporting an alert. ${SENSOR_ORDER.filter((id) => !snapshot.sensors[id].available)
+                          .map((id) => SENSOR_META[id].name)
+                          .join(' and ')} ${SENSOR_ORDER.filter((id) => !snapshot.sensors[id].available).length === 1 ? 'is' : 'are'} not connected, so this is not a complete safety check.`}
                 </p>
               </div>
             </motion.div>
           )}
       </div>
 
-      {/* Scrolls inside the panel if needed, so this column never pushes the page taller. */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 pt-2 lg:min-h-[96px]">
+      <div className="px-5 pt-2">
         {list.length > 0 && (
           <ul className="divide-y divide-line" aria-label={tab === 'active' ? 'Other active alerts' : 'All alerts'}>
             <AnimatePresence initial={false}>
               {list.map((a) => (
-                <AlertRow key={a.id} alert={a} now={now} onOpen={onOpenAlerts} />
+                <AlertRow key={a.id} alert={a} now={now} mode={snapshot.mode} onOpen={onOpenAlerts} />
               ))}
             </AnimatePresence>
           </ul>
@@ -302,12 +333,15 @@ export function AttentionPanel({
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[12.5px] font-medium text-ink">{meta.name}</span>
                       <span className="block truncate text-[11px] text-ink-3">
-                        Alerts at ≥ {rule.warning} · critical ≥ {rule.critical} {meta.unit}
+                        {isLive ? LIVE_RULE_TEXT[id].alert : `Alerts at ≥ ${rule.warning} · critical ≥ ${rule.critical} ${meta.unit}`}
                       </span>
                     </span>
                     <span className="inline-flex shrink-0 items-center gap-1.5 text-[11.5px] text-ink-2">
-                      <span className={cn('size-1.5 rounded-full', LEVEL_STYLE[st.level].dot)} aria-hidden />
-                      {st.level === 'safe' ? 'Watching' : st.label}
+                      <span
+                        className={cn('size-1.5 rounded-full', st.available ? LEVEL_STYLE[st.level].dot : 'border border-dashed border-ink-3')}
+                        aria-hidden
+                      />
+                      {!st.available ? st.label : st.level === 'safe' ? 'Watching' : st.label}
                     </span>
                   </li>
                 )
@@ -316,18 +350,39 @@ export function AttentionPanel({
           </div>
         )}
       </div>
+      </div>
 
       <div className="m-3 mt-2 grid grid-cols-2 gap-4 rounded-[14px] bg-mist px-4 py-3.5">
-        <div className="min-w-0">
-          <p className="eyebrow">Peak risk · 2 min</p>
-          <div className="mt-1 flex items-end gap-2">
-            <span className="tnum text-[22px] leading-none font-normal tracking-[-0.02em] text-ink">{peak}</span>
-            <div className="mb-0.5 w-16">
-              <Sparkline values={snapshot.history.map((p) => p.riskIndex)} height={18} minSpan={20} ariaLabel="Risk index over the last 2 minutes" />
+        {isLive ? (
+          <div className="min-w-0">
+            <p className="eyebrow">Temperature · DHT11</p>
+            <div className="mt-1 flex items-end gap-2">
+              <span className={cn('tnum text-[22px] leading-none font-normal tracking-[-0.02em]', snapshot.stale ? 'text-ink-3' : 'text-ink')}>
+                {temp.available ? `${temp.display} °C` : '—'}
+              </span>
+              {temps.length > 1 && (
+                <div className="mb-0.5 w-16">
+                  <Sparkline values={temps} height={18} minSpan={2} ariaLabel="Temperature this session" />
+                </div>
+              )}
             </div>
+            <p className="mt-1 text-[11px] text-ink-3">
+              {temp.available ? `Humidity ${humidity === null ? 'n/a' : `${formatNumber(humidity, 0)}%`}` : temp.label}
+              {snapshot.stale ? ' · stale' : ''}
+            </p>
           </div>
-          <p className="mt-1 text-[11px] text-ink-3">Now {snapshot.overall.riskIndex}</p>
-        </div>
+        ) : (
+          <div className="min-w-0">
+            <p className="eyebrow">Peak risk · 2 min</p>
+            <div className="mt-1 flex items-end gap-2">
+              <span className="tnum text-[22px] leading-none font-normal tracking-[-0.02em] text-ink">{peak}</span>
+              <div className="mb-0.5 w-16">
+                <Sparkline values={snapshot.history.map((p) => p.riskIndex ?? 0)} height={18} minSpan={20} ariaLabel="Risk index over the last 2 minutes" />
+              </div>
+            </div>
+            <p className="mt-1 text-[11px] text-ink-3">Now {snapshot.overall.riskIndex}</p>
+          </div>
+        )}
         <div className="min-w-0">
           <p className="eyebrow">Alerts raised</p>
           <p className="tnum mt-1 text-[22px] leading-none font-normal tracking-[-0.02em] text-ink">{raised.length}</p>

@@ -1,75 +1,145 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { MockTelemetrySource } from '../data/mockSource'
-import { detectAlerts, initialLatch, type AlertLatch } from '../lib/alerts'
-import type { Alert, ConnectionState, ScenarioId, TelemetrySnapshot } from '../types/telemetry'
+import { isWebSerialSupported, SerialTelemetrySource } from '../data/serialSource'
+import { detectAlerts, initialLatch, mergeAlerts, type AlertLatch } from '../lib/alerts'
+import type { Alert, ConnectionState, DataMode, LiveConnection, ScenarioId, TelemetrySnapshot } from '../types/telemetry'
 import { TelemetryContext, type TelemetryContextValue } from './telemetryContext'
 
 const MAX_ALERTS = 40
-/** Short "connecting" phase so the loading state is visible and honest. */
+/** Short "connecting" phase so the demo loading state is visible and honest. */
 const CONNECT_DELAY_MS = 600
 
 export function TelemetryProvider({ children }: { children: ReactNode }) {
-  // Swap this for an ESP32-backed TelemetrySource once the hardware is connected.
-  const [source] = useState(() => new MockTelemetrySource())
+  const [demo] = useState(() => new MockTelemetrySource())
+  const [serial] = useState(() => new SerialTelemetrySource())
+  const serialSupported = useMemo(() => isWebSerialSupported(), [])
 
-  const [snapshot, setSnapshot] = useState<TelemetrySnapshot | null>(null)
-  const [alerts, setAlerts] = useState<Alert[]>([])
+  const [mode, setMode] = useState<DataMode>('demo')
+  const modeRef = useRef<DataMode>('demo')
+
+  const [demoSnapshot, setDemoSnapshot] = useState<TelemetrySnapshot | null>(null)
+  const [liveSnapshot, setLiveSnapshot] = useState<TelemetrySnapshot | null>(null)
+  const [demoAlerts, setDemoAlerts] = useState<Alert[]>([])
+  const [liveAlerts, setLiveAlerts] = useState<Alert[]>([])
   const [connection, setConnection] = useState<ConnectionState>('connecting')
+  const [live, setLive] = useState<LiveConnection>(() => serial.getConnection())
   const [scenario, setScenarioState] = useState<ScenarioId>('normal')
-  const latchRef = useRef<AlertLatch>(initialLatch())
+  const demoLatch = useRef<AlertLatch>(initialLatch())
+  const liveLatch = useRef<AlertLatch>(initialLatch())
 
+  const enterMode = useCallback(
+    (next: DataMode) => {
+      modeRef.current = next
+      setMode(next)
+      // The simulator only runs in demo mode, so it can never overwrite live readings.
+      if (next === 'demo') demo.connect()
+      else demo.disconnect()
+    },
+    [demo],
+  )
+
+  // Demo feed
   useEffect(() => {
     let unsubscribe: (() => void) | undefined
     const timer = setTimeout(() => {
-      unsubscribe = source.subscribe((snap) => {
-        setSnapshot(snap)
-        const { alerts: fresh, latch } = detectAlerts(snap.sensors, latchRef.current, snap.timestamp)
-        latchRef.current = latch
-        if (fresh.length) {
-          // A newer alert (or recovery) for a sensor clears that sensor's older alerts.
-          const touched = new Set(fresh.map((a) => a.sensor))
-          setAlerts((prev) =>
-            [...[...fresh].reverse(), ...prev.map((a) => (touched.has(a.sensor) && !a.cleared ? { ...a, cleared: true } : a))].slice(
-              0,
-              MAX_ALERTS,
-            ),
-          )
-        }
+      unsubscribe = demo.subscribe((snap) => {
+        setDemoSnapshot(snap)
+        const { alerts: fresh, latch } = detectAlerts(snap.sensors, demoLatch.current, snap.timestamp, 'demo')
+        demoLatch.current = latch
+        if (fresh.length) setDemoAlerts((prev) => mergeAlerts(prev, fresh, MAX_ALERTS))
       })
-      source.connect()
+      if (modeRef.current === 'demo') demo.connect()
       setConnection('live')
     }, CONNECT_DELAY_MS)
     return () => {
       clearTimeout(timer)
       unsubscribe?.()
-      source.disconnect()
+      demo.disconnect()
     }
-  }, [source])
+  }, [demo])
+
+  // Live feed (ESP32 over USB serial)
+  useEffect(() => {
+    serial.setCallbacks({
+      onConnection: setLive,
+      onSnapshot: (snap) => {
+        setLiveSnapshot(snap)
+        // Only fresh readings can raise or clear alerts; stale/waiting snapshots never do.
+        if (snap.stale || !snap.overall.known) return
+        const { alerts: fresh, latch } = detectAlerts(snap.sensors, liveLatch.current, snap.timestamp, 'live')
+        liveLatch.current = latch
+        if (fresh.length) setLiveAlerts((prev) => mergeAlerts(prev, fresh, MAX_ALERTS))
+      },
+    })
+    return () => {
+      serial.setCallbacks(null)
+      void serial.disconnect()
+    }
+  }, [serial])
+
+  const connectEsp32 = useCallback(async () => {
+    const opened = await serial.connect()
+    if (opened) enterMode('live')
+  }, [serial, enterMode])
+
+  const disconnectEsp32 = useCallback(async () => {
+    await serial.disconnect()
+  }, [serial])
+
+  const switchToDemo = useCallback(async () => {
+    if (serial.isOpen) await serial.disconnect()
+    enterMode('demo')
+  }, [serial, enterMode])
 
   const setScenario = useCallback(
     (id: ScenarioId) => {
+      if (modeRef.current !== 'demo') return
       setScenarioState(id)
-      source.setScenario(id)
+      demo.setScenario(id)
     },
-    [source],
+    [demo],
   )
 
   const reset = useCallback(() => {
-    latchRef.current = initialLatch()
+    if (modeRef.current !== 'demo') return
+    demoLatch.current = initialLatch()
     setScenarioState('normal')
-    source.reset()
-    setAlerts([])
-  }, [source])
+    demo.reset()
+    setDemoAlerts([])
+  }, [demo])
 
-  const clearAlerts = useCallback(() => setAlerts([]), [])
-
-  const acknowledge = useCallback((id: string) => {
-    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, acknowledged: true } : a)))
+  const clearAlerts = useCallback(() => {
+    if (modeRef.current === 'demo') setDemoAlerts([])
+    else setLiveAlerts((prev) => prev.filter((a) => !a.cleared && a.severity !== 'resolved')) // keep open alerts
   }, [])
 
+  const acknowledge = useCallback((id: string) => {
+    const ack = (prev: Alert[]) => prev.map((a) => (a.id === id ? { ...a, acknowledged: true } : a))
+    if (modeRef.current === 'demo') setDemoAlerts(ack)
+    else setLiveAlerts(ack)
+  }, [])
+
+  const snapshot = mode === 'demo' ? demoSnapshot : liveSnapshot
+  const alerts = mode === 'demo' ? demoAlerts : liveAlerts
+
   const value = useMemo<TelemetryContextValue>(
-    () => ({ snapshot, alerts, connection, sourceKind: source.kind, scenario, setScenario, reset, clearAlerts, acknowledge }),
-    [snapshot, alerts, connection, source.kind, scenario, setScenario, reset, clearAlerts, acknowledge],
+    () => ({
+      snapshot,
+      alerts,
+      connection,
+      mode,
+      live,
+      serialSupported,
+      connectEsp32,
+      disconnectEsp32,
+      switchToDemo,
+      scenario,
+      setScenario,
+      reset,
+      clearAlerts,
+      acknowledge,
+    }),
+    [snapshot, alerts, connection, mode, live, serialSupported, connectEsp32, disconnectEsp32, switchToDemo, scenario, setScenario, reset, clearAlerts, acknowledge],
   )
 
   return <TelemetryContext.Provider value={value}>{children}</TelemetryContext.Provider>

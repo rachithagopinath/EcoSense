@@ -5,9 +5,17 @@ import { SENSOR_ICON } from '../../lib/sensorIcons'
 import { ALERT_STYLE } from '../../lib/status'
 import type { Alert } from '../../types/telemetry'
 
-export function AlertItem({ alert: a, now, showSeverity }: { alert: Alert; now: number; showSeverity?: boolean }) {
+export function AlertItem({ alert: a, now, showSeverity, showState }: { alert: Alert; now: number; showSeverity?: boolean; showState?: boolean }) {
   const Icon = SENSOR_ICON[a.sensor]
   const s = ALERT_STYLE[a.severity]
+  const state =
+    a.severity === 'resolved'
+      ? `Cleared at ${formatTime(a.timestamp)}`
+      : a.cleared
+        ? a.clearedAt
+          ? `First detected ${formatTime(a.timestamp)} · cleared ${formatTime(a.clearedAt)}`
+          : `First detected ${formatTime(a.timestamp)} · superseded by a newer alert`
+        : `First detected ${formatTime(a.timestamp)} · active${a.acknowledged ? ', acknowledged' : ''}`
   return (
     <motion.li
       layout
@@ -32,6 +40,15 @@ export function AlertItem({ alert: a, now, showSeverity }: { alert: Alert; now: 
           {showSeverity && <span className={cn('mr-1.5 font-medium', s.text)}>{s.label}</span>}
           {a.message}
         </p>
+        {showState && (
+          <p className="tnum mt-1 flex items-center gap-1.5 text-[11.5px] text-ink-3">
+            <span
+              className={cn('size-1.5 rounded-full', a.severity !== 'resolved' && !a.cleared ? s.dot : 'border border-ink-3')}
+              aria-hidden
+            />
+            {state} · {a.ref}
+          </p>
+        )}
       </div>
     </motion.li>
   )

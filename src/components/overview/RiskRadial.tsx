@@ -1,6 +1,5 @@
 import { useMemo } from 'react'
-import { evaluateSensors, SCORE_CRITICAL, SCORE_WARNING, SENSOR_META, SENSOR_ORDER } from '../../lib/evaluate'
-import { formatReading } from '../../lib/format'
+import { SCORE_CRITICAL, SCORE_WARNING, SENSOR_META, SENSOR_ORDER } from '../../lib/evaluate'
 import type { HistoryPoint, SensorId, StatusLevel, TelemetrySnapshot } from '../../types/telemetry'
 
 /**
@@ -10,6 +9,9 @@ import type { HistoryPoint, SensorId, StatusLevel, TelemetrySnapshot } from '../
  * (oldest → newest clockwise) and the dot's distance from the centre encodes
  * its risk: the outer ring is normal, the inner ring critical. The newest
  * reading of each sensor carries a label.
+ *
+ * Live readings have no 0–100 score (the sensors are on/off), so they sit in
+ * the middle of their status band. Sensors without data draw no dots.
  */
 
 const C = 200
@@ -36,6 +38,9 @@ function radiusFor(score: number): number {
   if (score >= SCORE_WARNING) return 124 - ((score - SCORE_WARNING) / (SCORE_CRITICAL - SCORE_WARNING)) * 36 // 124 → 88
   return 168 - (score / SCORE_WARNING) * 36 // 168 → 132
 }
+
+/** Centre of each band, for readings that only have a level. */
+const BAND_RADIUS: Record<StatusLevel, number> = { safe: 150, warning: 106, critical: 63 }
 
 /** Small deterministic jitter so dots spread like a scatter, not a line. */
 const jitter = (i: number, s: number) => {
@@ -66,14 +71,16 @@ function buildDots(history: HistoryPoint[]): Dot[] {
   const n = history.length
   const dots: Dot[] = []
   history.forEach((p, i) => {
-    const statuses = evaluateSensors(p)
     SENSOR_ORDER.forEach((id, s) => {
+      const point = p.sensors[id]
+      if (point.level === null) return
       const [start, span] = SECTOR[id]
       const angle = start + ((i + 0.5) / n) * span + jitter(i, s + 7) * 1.2
-      const r = radiusFor(statuses[id].score) + jitter(i, s) * 5
+      const base = point.score === null ? BAND_RADIUS[point.level] : radiusFor(point.score)
+      const r = base + jitter(i, s) * (point.score === null ? 9 : 5)
       const [x, y] = polar(angle, r)
       const age = i / Math.max(1, n - 1)
-      const level = statuses[id].level
+      const level = point.level
       dots.push({ key: `${s}-${i}`, x, y, level, opacity: level === 'safe' ? 0.1 + 0.3 * age : 0.45 + 0.55 * age })
     })
   })
@@ -81,22 +88,26 @@ function buildDots(history: HistoryPoint[]): Dot[] {
 }
 
 export function RiskRadial({ snapshot }: { snapshot: TelemetrySnapshot }) {
-  const { history, sensors, reading } = snapshot
+  const { history, sensors } = snapshot
   // Dots only change when a new sample arrives.
   const dots = useMemo(() => buildDots(history), [history])
-  const total = history.length * SENSOR_ORDER.length
+  const total = dots.length
+  const span = history.length > 1 ? history[history.length - 1].t - history[0].t : 0
+  const caption = snapshot.mode === 'live' && span < 110_000 ? 'THIS SESSION' : 'LAST 2 MINUTES'
 
   const callouts = SENSOR_ORDER.map((id) => {
+    const st = sensors[id]
     const [start, span] = SECTOR[id]
     const angle = start + span
-    const [x, y] = polar(angle, radiusFor(sensors[id].score))
+    const r = !st.available ? BAND_RADIUS.safe + 14 : st.score === null ? BAND_RADIUS[st.level] : radiusFor(st.score)
+    const [x, y] = polar(angle, r)
     const right = x >= C
     const text = `${SHORT[id]}`
-    const value = `${formatReading(id, reading)}${SENSOR_META[id].unit === '°C' ? '°' : SENSOR_META[id].unit === '%' ? '%' : ''}`
+    const value = st.short
     const width = 16 + text.length * 6.4 + value.length * 6.2 + 6
     const lx = right ? x + 10 : x - 10 - width
     const ly = y - 11
-    return { id, x, y, lx, ly, width, text, value, level: sensors[id].level }
+    return { id, x, y, lx, ly, width, text, value, level: st.level, available: st.available }
   })
 
   return (
@@ -106,7 +117,7 @@ export function RiskRadial({ snapshot }: { snapshot: TelemetrySnapshot }) {
       preserveAspectRatio="xMidYMid meet"
       role="img"
       aria-label={`Radial risk map of ${total} recent readings. ${SENSOR_ORDER.map(
-        (id) => `${SENSOR_META[id].name} ${sensors[id].label}, ${formatReading(id, reading)} ${SENSOR_META[id].unit}`,
+        (id) => `${SENSOR_META[id].name} ${sensors[id].label}${sensors[id].available ? `, ${sensors[id].display} ${sensors[id].unit}` : ''}`,
       ).join('; ')}.`}
     >
       {/* Outer dashed boundary with small markers */}
@@ -116,7 +127,7 @@ export function RiskRadial({ snapshot }: { snapshot: TelemetrySnapshot }) {
         return <circle key={k} cx={x} cy={y} r={2.6} fill="var(--color-night)" stroke="#3b4657" strokeWidth={1} />
       })}
       <text x={C} y={10} textAnchor="middle" fill="#7d8896" fontSize={8.5} letterSpacing={1.4}>
-        LAST 2 MINUTES
+        {caption}
       </text>
 
       {/* Band rings */}
@@ -151,7 +162,19 @@ export function RiskRadial({ snapshot }: { snapshot: TelemetrySnapshot }) {
       </text>
 
       {/* Latest reading per sensor */}
-      {callouts.map((c) => (
+      {callouts.map((c) =>
+        !c.available ? (
+          <g key={c.id} opacity={0.75}>
+            <circle cx={c.x} cy={c.y} r={5.5} fill="none" stroke="#6b7685" strokeWidth={1.5} strokeDasharray="2 2" />
+            <rect x={c.lx} y={c.ly} width={c.width} height={22} rx={11} fill="none" stroke="#6b7685" strokeDasharray="3 3" />
+            <text x={c.lx + 10} y={c.ly + 14.5} fill="#aab3be" fontSize={10.5} fontWeight={500}>
+              {c.text}
+              <tspan dx={5} fill="#7d8896">
+                {c.value}
+              </tspan>
+            </text>
+          </g>
+        ) : (
         <g key={c.id}>
           <circle cx={c.x} cy={c.y} r={5.5} fill="none" stroke="#ffffff" strokeWidth={1.5} />
           <circle cx={c.x} cy={c.y} r={2.6} fill={c.level === 'safe' ? '#ffffff' : DOT_FILL[c.level]} />
@@ -163,7 +186,8 @@ export function RiskRadial({ snapshot }: { snapshot: TelemetrySnapshot }) {
             </tspan>
           </text>
         </g>
-      ))}
+        ),
+      )}
     </svg>
   )
 }
