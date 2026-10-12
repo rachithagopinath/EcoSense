@@ -1,4 +1,4 @@
-import type { OverallStatus, SensorId, SensorReading, SensorStatus, StatusLevel } from '../types/telemetry'
+import type { HistoryPoint, OverallStatus, SensorId, SensorReading, SensorStatus, StatusLevel } from '../types/telemetry'
 
 /**
  * Threshold rules for each sensor.
@@ -65,7 +65,7 @@ function scoreOf(v: number, rule: Rule): number {
   return 100
 }
 
-const levelOf = (score: number): StatusLevel =>
+export const levelOf = (score: number): StatusLevel =>
   score >= SCORE_CRITICAL ? 'critical' : score >= SCORE_WARNING ? 'warning' : 'safe'
 
 const TEXT: Record<SensorId, Record<StatusLevel, [label: string, reason: string]>> = {
@@ -91,16 +91,46 @@ const TEXT: Record<SensorId, Record<StatusLevel, [label: string, reason: string]
   },
 }
 
+export function formatNumber(v: number, decimals: number): string {
+  return v.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+}
+
+/** Demo mode: score every simulated reading against RULES. */
 export function evaluateSensors(r: SensorReading): Record<SensorId, SensorStatus> {
   const out = {} as Record<SensorId, SensorStatus>
   for (const id of SENSOR_ORDER) {
-    const score = scoreOf(sensorValue(id, r), RULES[id])
+    const meta = SENSOR_META[id]
+    const value = sensorValue(id, r)
+    const score = scoreOf(value, RULES[id])
     const level = levelOf(score)
     let [label, reason] = TEXT[id][level]
     if (id === 'flood' && level === 'safe' && r.rainLevel > 18) label = 'Light rain'
-    out[id] = { id, level, score, label, reason }
+    const display = formatNumber(value, meta.decimals)
+    const unitShort = meta.unit === '°C' ? '°' : meta.unit === '%' ? '%' : ''
+    out[id] = {
+      id,
+      available: true,
+      level,
+      score,
+      label,
+      reason,
+      display,
+      unit: meta.unit,
+      detail: `${meta.device} · ${display} ${meta.unit}`,
+      short: `${display}${unitShort}`,
+    }
   }
   return out
+}
+
+/** Store the per-sensor state of one moment for the trend chart and radial map. */
+export function historyPoint(t: number, sensors: Record<SensorId, SensorStatus>, overall: OverallStatus, values: Record<SensorId, number | null>): HistoryPoint {
+  const point = {} as HistoryPoint['sensors']
+  for (const id of SENSOR_ORDER) {
+    const s = sensors[id]
+    point[id] = { level: s.available ? s.level : null, score: s.available ? s.score : null, value: s.available ? values[id] : null }
+  }
+  return { t, riskIndex: overall.riskIndex, activeCount: overall.activeHazards.length, sensors: point }
 }
 
 /**
@@ -108,17 +138,17 @@ export function evaluateSensors(r: SensorReading): Record<SensorId, SensorStatus
  * active hazard adds a little to the index to reflect compounding risk.
  */
 export function overallStatus(sensors: Record<SensorId, SensorStatus>): OverallStatus {
-  const ranked = [...SENSOR_ORDER].sort((a, b) => sensors[b].score - sensors[a].score)
+  const ranked = [...SENSOR_ORDER].sort((a, b) => (sensors[b].score ?? 0) - (sensors[a].score ?? 0))
   const active = ranked.filter((id) => sensors[id].level !== 'safe')
   const top = sensors[ranked[0]]
-  const extra = active.slice(1).reduce((s, id) => s + sensors[id].score * 0.15, 0)
-  const riskIndex = Math.min(100, Math.round(top.score + extra))
+  const extra = active.slice(1).reduce((s, id) => s + (sensors[id].score ?? 0) * 0.15, 0)
+  const riskIndex = Math.min(100, Math.round((top.score ?? 0) + extra))
   const level = levelOf(riskIndex)
+  const base = { level, known: true, riskIndex, availableCount: SENSOR_ORDER.length }
 
   if (active.length === 0) {
     return {
-      level,
-      riskIndex,
+      ...base,
       activeHazards: [],
       headline: 'Environment is safe',
       explanation: 'All four sensors are reporting within normal limits. No action is required.',
@@ -128,8 +158,7 @@ export function overallStatus(sensors: Record<SensorId, SensorStatus>): OverallS
   const names = active.map((id) => SENSOR_META[id].name.toLowerCase())
   if (active.length > 1) {
     return {
-      level,
-      riskIndex,
+      ...base,
       activeHazards: active,
       headline: `${active.length} active hazards`,
       explanation: `${top.reason}, with ${names.slice(1).join(' and ')} also out of range. ${
@@ -138,8 +167,7 @@ export function overallStatus(sensors: Record<SensorId, SensorStatus>): OverallS
     }
   }
   return {
-    level,
-    riskIndex,
+    ...base,
     activeHazards: active,
     headline: level === 'critical' ? `${SENSOR_META[top.id].name} hazard` : `${SENSOR_META[top.id].name} warning`,
     explanation: `${top.reason}. ${level === 'critical' ? 'Immediate response is recommended.' : 'Monitor this reading closely.'}`,

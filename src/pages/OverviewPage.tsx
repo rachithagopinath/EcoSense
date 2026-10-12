@@ -24,7 +24,7 @@ export function OverviewPage({ onNavigate }: { onNavigate: (r: RouteId) => void 
 
       {!snapshot ? (
         <div className="grid flex-1 gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]" aria-busy="true">
-          <p className="sr-only">Starting the simulated sensor feed…</p>
+          <p className="sr-only">Starting the demo data feed…</p>
           <div className="space-y-4">
             <Skeleton className="h-[340px]" />
             <div className="grid gap-4 sm:grid-cols-2">
@@ -40,8 +40,8 @@ export function OverviewPage({ onNavigate }: { onNavigate: (r: RouteId) => void 
             <div className="flex lg:flex-[1.1_1_0%]">
               <RiskBriefing snapshot={snapshot} />
             </div>
-            <div className="grid gap-4 sm:grid-cols-2 lg:flex-[1_1_0%] 2xl:gap-5 short:gap-3">
-              <TrendBars history={snapshot.history} />
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2 lg:flex-[1_1_0%] 2xl:gap-5 short:gap-3">
+              <TrendBars history={snapshot.history} mode={snapshot.mode} stale={snapshot.stale} />
               <SensorHealth snapshot={snapshot} onOpen={() => onNavigate('monitoring')} />
             </div>
           </div>

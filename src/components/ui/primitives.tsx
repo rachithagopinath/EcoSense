@@ -64,6 +64,15 @@ export function StatusPill({ level, label }: { level: StatusLevel; label?: strin
   )
 }
 
+/** Pill for a sensor with no usable reading, deliberately different from "Normal". */
+export function UnavailablePill({ label }: { label: string }) {
+  return (
+    <span className="inline-flex h-5 items-center rounded-full border border-dashed border-line-strong px-2 text-[9.5px] font-semibold tracking-[0.08em] text-ink-3 uppercase">
+      {label}
+    </span>
+  )
+}
+
 export function Skeleton({ className }: { className?: string }) {
   return <div className={cn('animate-pulse rounded-[18px] bg-line/70', className)} aria-hidden />
 }

@@ -9,8 +9,16 @@ import { NAV_ITEMS } from './nav'
 
 /** Logo · dark pill navigation · simulation status and controls. */
 export function TopNav({ route, onNavigate }: { route: RouteId; onNavigate: (r: RouteId) => void }) {
-  const { alerts, reset } = useTelemetry()
+  const { alerts, reset, mode, live } = useTelemetry()
   const active = alerts.filter(isActive).length
+  const badge =
+    mode === 'demo'
+      ? { text: 'Simulated', dot: 'bg-warn', title: 'Demo data: all readings are simulated. The ESP32 is not connected.' }
+      : live.status === 'live'
+        ? { text: 'Live', dot: 'bg-safe', title: 'Live readings from the ESP32 over USB.' }
+        : live.status === 'waiting' || live.status === 'connecting'
+          ? { text: 'Waiting', dot: 'bg-accent', title: 'Connected to the ESP32, waiting for readings.' }
+          : { text: 'Stale', dot: 'bg-warn', title: 'The ESP32 is not sending data. Showing the last reading received.' }
 
   return (
     <header className="flex flex-wrap items-center gap-3 md:flex-nowrap">
@@ -23,10 +31,10 @@ export function TopNav({ route, onNavigate }: { route: RouteId; onNavigate: (r: 
       <div className="flex items-center gap-2 md:order-3 md:basis-[190px] md:justify-end">
         <span
           className="hidden h-8 items-center gap-1.5 rounded-full border border-line bg-paper px-3 text-[12px] text-ink-2 sm:inline-flex"
-          title="All readings are simulated. The ESP32 is not connected yet."
+          title={badge.title}
         >
-          <span className="size-1.5 rounded-full bg-warn" aria-hidden />
-          Simulated
+          <span className={cn('size-1.5 rounded-full', badge.dot)} aria-hidden />
+          {badge.text}
         </span>
         <button
           type="button"
@@ -44,9 +52,10 @@ export function TopNav({ route, onNavigate }: { route: RouteId; onNavigate: (r: 
         <button
           type="button"
           onClick={reset}
-          className="grid size-8 place-items-center rounded-full border border-line bg-paper text-ink-2 transition-colors hover:text-ink"
+          disabled={mode !== 'demo'}
+          className="grid size-8 place-items-center rounded-full border border-line bg-paper text-ink-2 transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
           aria-label="Reset to normal conditions"
-          title="Reset to normal conditions"
+          title={mode === 'demo' ? 'Reset demo to normal conditions' : 'Reset only applies to demo data'}
         >
           <RotateCcw className="size-3.5" strokeWidth={1.8} />
         </button>

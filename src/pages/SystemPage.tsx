@@ -3,29 +3,49 @@ import { Fragment } from 'react'
 import { PageHeader } from '../components/layout/PageHeader'
 import { SectionHeader, Surface } from '../components/ui/primitives'
 import { useTelemetry } from '../context/telemetryContext'
+import { SERIAL_BAUD_RATE } from '../config/hardware'
 import { SAMPLE_INTERVAL_MS } from '../data/mockSource'
 import { cn } from '../lib/cn'
 import { SENSOR_META, SENSOR_ORDER } from '../lib/evaluate'
+import { formatTime } from '../lib/format'
+import { LIVE_DEVICE } from '../lib/live'
 
 type StepState = 'active' | 'pending'
 
 export function SystemPage() {
-  const { connection, sourceKind } = useTelemetry()
-  const simulated = sourceKind === 'simulated'
+  const { connection, mode, live } = useTelemetry()
+  const simulated = mode === 'demo'
+  const linkUp = live.status === 'live' || live.status === 'waiting' || live.status === 'stale'
+  const linkText: Record<typeof live.status, string> = {
+    idle: 'Not connected',
+    unsupported: 'Not supported in this browser',
+    connecting: 'Connecting…',
+    waiting: 'Port open, waiting for data',
+    live: 'Connected, receiving data',
+    stale: 'Port open, no recent data',
+    disconnected: 'Disconnected',
+    error: 'Could not open the port',
+  }
 
   const pipeline: { title: string; detail: string; state: StepState }[] = [
-    { title: 'Sensors', detail: simulated ? 'Simulated readings' : 'Hardware', state: 'active' },
-    { title: 'ESP32 edge node', detail: simulated ? 'Not connected' : 'Connected', state: simulated ? 'pending' : 'active' },
+    { title: 'Sensors', detail: simulated ? 'Simulated readings' : 'ESP32 sensor array', state: 'active' },
+    { title: 'ESP32 edge node', detail: linkText[live.status], state: live.status === 'live' ? 'active' : 'pending' },
     { title: 'Risk assessment', detail: 'Rule-based thresholds', state: 'active' },
-    { title: 'Dashboard', detail: connection === 'live' ? 'Receiving data' : 'Starting…', state: connection === 'live' ? 'active' : 'pending' },
+    {
+      title: 'Dashboard',
+      detail: simulated ? (connection === 'live' ? 'Showing demo data' : 'Starting…') : live.status === 'live' ? 'Showing live data' : 'Showing last reading',
+      state: simulated ? (connection === 'live' ? 'active' : 'pending') : live.status === 'live' ? 'active' : 'pending',
+    },
   ]
 
   const details: [string, string][] = [
-    ['Data source', simulated ? 'Built-in simulator' : 'ESP32 telemetry'],
-    ['ESP32 connection', simulated ? 'Not connected' : 'Connected'],
-    ['Sample interval', `${SAMPLE_INTERVAL_MS / 1000} seconds`],
-    ['Assessment method', 'Threshold rules per sensor, combined into one risk index'],
-    ['Alerting', 'Raised when a sensor crosses its warning or critical threshold'],
+    ['Data source', simulated ? 'Built-in simulator (demo)' : 'ESP32 over USB serial (Web Serial)'],
+    ['ESP32 connection', linkText[live.status]],
+    ['Last reading', live.lastUpdate ? formatTime(live.lastUpdate) : '—'],
+    ['Lines received', linkUp || live.validLines ? `${live.validLines} valid · ${live.ignoredLines} ignored` : '—'],
+    ['Serial settings', `${SERIAL_BAUD_RATE} baud, one JSON object per line`],
+    ['Demo interval', `${SAMPLE_INTERVAL_MS / 1000} seconds`],
+    ['Assessment method', simulated ? 'Threshold rules per sensor, combined into one risk index' : 'Threshold rules per sensor; alert count, no index'],
   ]
 
   return (
@@ -65,12 +85,12 @@ export function SystemPage() {
           </Surface>
 
           <Surface aria-labelledby="hardware-heading">
-            <SectionHeader id="hardware-heading" title="Sensor hardware" meta="Planned for the ESP32 prototype" />
+            <SectionHeader id="hardware-heading" title="Sensor hardware" meta="ESP32-WROOM prototype" />
             <ul className="divide-y divide-line border-t border-line">
               {SENSOR_ORDER.map((id) => (
                 <li key={id} className="grid grid-cols-[150px_1fr] gap-4 px-6 py-3.5 text-[13.5px]">
                   <span className="text-ink-3">{SENSOR_META[id].name}</span>
-                  <span className="text-ink">{SENSOR_META[id].device}</span>
+                  <span className="text-ink">{id === 'air' ? 'MQ-135 · not connected to this ESP32' : LIVE_DEVICE[id]}</span>
                 </li>
               ))}
             </ul>

@@ -1,5 +1,5 @@
-import { evaluateSensors, overallStatus } from '../lib/evaluate'
-import type { HistoryPoint, ScenarioId, SensorReading, TelemetrySnapshot } from '../types/telemetry'
+import { evaluateSensors, historyPoint, overallStatus, SENSOR_ORDER, sensorValue } from '../lib/evaluate'
+import type { HistoryPoint, ScenarioId, SensorId, SensorReading, TelemetrySnapshot } from '../types/telemetry'
 import { SCENARIOS } from './scenarios'
 import type { TelemetryListener, TelemetrySource } from './telemetrySource'
 
@@ -33,10 +33,13 @@ function step(current: SensorReading, target: SensorReading, rate: number): Sens
   return next
 }
 
-/** Build a UI snapshot from a reading and history (shared with a future ESP32 source). */
+const valuesOf = (r: SensorReading) =>
+  Object.fromEntries(SENSOR_ORDER.map((id) => [id, sensorValue(id, r)])) as Record<SensorId, number>
+
+/** Build a demo snapshot from a simulated reading and its history. */
 export function buildSnapshot(reading: SensorReading, history: HistoryPoint[], timestamp = Date.now()): TelemetrySnapshot {
   const sensors = evaluateSensors(reading)
-  return { timestamp, reading, sensors, overall: overallStatus(sensors), history }
+  return { mode: 'demo', timestamp, stale: false, sensors, overall: overallStatus(sensors), history, live: null }
 }
 
 /** Simulated four-sensor source with scenario control for the demo. */
@@ -93,8 +96,8 @@ export class MockTelemetrySource implements TelemetrySource {
   }
 
   private point(t: number): HistoryPoint {
-    const riskIndex = overallStatus(evaluateSensors(this.reading)).riskIndex
-    return { t, riskIndex, ...this.reading }
+    const sensors = evaluateSensors(this.reading)
+    return historyPoint(t, sensors, overallStatus(sensors), valuesOf(this.reading))
   }
 
   private tick() {
